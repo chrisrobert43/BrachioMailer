@@ -1,0 +1,1190 @@
+<?php
+/*
+ * Copyright (c) 2020, D9ping
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ * 1. Redistributions of source code must retain the above copyright notice, this
+ *    list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ * ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ * 
+ * The views and conclusions contained in the software and documentation are those
+ * of the authors and should not be interpreted as representing official policies,
+ * either expressed or implied.
+ */
+
+/**
+ * Class for creating a mail/RFC822 message.
+ */
+class BrachioMailer {
+
+    const MIMEVERSION = '1.0';
+
+    const MAILLINEMAXLENGTHHEADER = 998;
+
+    // Sendmail relay support 2040 characters per line this is the known maximum line length used. 
+    // see http://www.jebriggs.com/blog/2010/07/smtp-maximum-line-lengths/
+    const MAILLINEMAXLENGTHBODY = 2038;
+
+    const CONVMAILMAXLINKS = 32;
+
+    const BOUNDARYPREFIX = '--';
+
+    const ENDPARTSUFFIX = '--';
+
+    const DEFAULTHASHCASHCALCBITS = 20;
+
+    private $attachments = array();
+
+    private $autosubmitted = 'auto-generated';
+    private $delay = 0;
+    private $debugmode = false;
+    private $messagecharset = 'UTF-8';
+    private $messagecontenttype = 'text/plain';
+    private $organization = null;
+    private $replyto = null;
+    private $returnpath = null;
+    private $precedencebulk = false;
+    private $nopublicarchive = false;
+    private $nondeliveryreport = false;
+    private $importance = '';
+    private $pgpkeyid = null;
+    private $pgpkeyfingerprint = null;
+    private $pgpkeygetkeyserverurl = null;
+    private $sensitivity = null;
+    private $abuseemail = null;
+    private $abuseurl = null;
+    private $includeipsender = true;
+    private $useencodedip = false;
+    private $usexpriority = false;
+    private $eipencryptionkey = '';
+    private $reportmailer = true;
+    private $dispositionnotificationto = null;
+    private $returnreceiptto = null;
+    private $usehashcash = false;
+    private $usesmime = false;
+    private $smimecachefolder = null;
+    private $smimekeypublic = null;
+    private $smimekeyprivate = null;
+    private $smimekeyprivatepassphrase = null;
+    private $smimeextracerts = '';
+
+    /**
+     * Creating a new instance of BrachioMailer class.
+     *
+     * @param bool $debugmode In debug mode the generated mail message will be outputted to the
+     *                        client as eml file instead of being send/queued.
+     */
+    public function __construct($debugmode = false)
+    {
+        $this->debugmode = (bool)$debugmode;
+        if (!function_exists('quoted_printable_encode')) {
+            throw new Exception('Please upgrade PHP to at least version 5.3.');
+        }
+
+        if (!defined('CHRENTER')) {
+            define('CHRENTER', "\r\n");
+        }
+    }
+
+    /**
+     * RFC2045, RFC2046, RFC2047, RFC4288, RFC4289 and RFC2049 MIME content type.
+     *
+     * @param string $messageContentType The message content-type e.g. this can be: "text/plain" or "text/html"
+     */
+    public function setMessagecontenttype($messageContentType)
+    {
+        $this->messagecontenttype = $messageContentType;
+    }
+
+    /**
+     * The characterset of the data part of the message.
+     *
+     * @param string $messageCharset The charset of the content of the message. 
+     *                               E.g. this can be: "7bit", "8bit", "UCS-4" etc.
+     */
+    public function setMessagecharset($messageCharset)
+    {
+        $validencoding = false;
+        $listEncodings = mb_list_encodings();
+        $numEncodings = count($listEncodings);
+        if ($numEncodings > 10) {
+            // Start from "7bit"
+            for ($i = 11; $i < $numEncodings; ++$i) {
+                if ($listEncodings[$i] === $messageCharset) {
+                    $validencoding = true;
+                    break;
+                }
+            }
+        }
+
+        if (!$validencoding) {
+            throw new InvalidArgumentException('No valid message charset used.');
+            return;
+        }
+
+        $this->messagecharset = $messageCharset;
+    }
+
+    /**
+     * Unofficial. RFC 1036 2.2.8. The organization of the send message.
+     *
+     * @param string $organization The organisation(company) that sends the message.
+     */
+    public function setOrganization($organization)
+    {
+        $this->organization = $organization;
+    }
+
+    /**
+     * The e-mail address to reply to. 
+     * If this is set (not null or empty string) it will be used otherwise Reply-to: header is not included.
+     *
+     * @param string $replyTo The reply to e-mail address to send a reaction to this message to.
+     */
+    public function setReplyto($replyTo)
+    {
+        if (!filter_var($replyTo, FILTER_VALIDATE_EMAIL) ||
+            strpos($replyTo, ' ') !== false ||
+            strpos($replyTo, "\r") !== false ||
+            strpos($replyTo, "\n") !== false) {
+            throw new InvalidArgumentException(sprintf('The %1$s value is not a valid e-mail address.', '$replyTo'));
+            return;
+        }
+
+        $this->replyto = $replyTo;
+    }
+
+    /**
+     * The e-mail address to return the e-mail to in case of errors.
+     * If not set the emailfrom parameter will be used as returnpath/envelope from email address.
+     *
+     * @param string $returnPath The bounce\envelope e-mail address.
+     */
+    public function setReturnpath($returnPathEmailaddr)
+    {
+        if (!filter_var($returnPathEmailaddr, FILTER_VALIDATE_EMAIL) ||
+            strpos($returnPathEmailaddr, ' ') !== false ||
+            strpos($returnPathEmailaddr, "\r") !== false ||
+            strpos($returnPathEmailaddr, "\n") !== false) {
+            throw new InvalidArgumentException(sprintf('The %1$s value is not a valid e-mail address.', '$returnPathEmailaddr'));
+            return;
+        }
+
+        $this->returnpath = $returnPathEmailaddr;
+    }
+
+    /**
+     * Unofficial. RFC2076, used to mark mass mailing send at once it's use is now unofficial and discouraged.
+     * Warning: it's not recommeded to use this.
+     *
+     * @param bool $precedenceBulk True to use the Precedence: bulk mail header to mark mass mailing(discouraged).
+     */
+    public function setPrecedencebulk($precedenceBulk)
+    {
+        $this->precedencebulk = (bool)$precedenceBulk;
+    }
+
+    /**
+     * Unofficial. Do not archive the message in publicly available archives.
+     *
+     * @param bool $noPublicArchive
+     */
+    public function setNopublicarchive($noPublicArchive)
+    {
+        $this->nopublicarchive = (bool)$noPublicArchive;
+    }
+
+    /**
+     * Unofficial. Try preventing receiving Non delivery reports.
+     * Warning: this header has often no effect at all.
+     *
+     * @param bool $nonDeliveryReport True to add the mail headers to prevent Non delivery reports.
+     */
+    public function setNondeliveryreport($nonDeliveryReport)
+    {
+        $this->nonondeliveryreport = (bool)$nonDeliveryReport;
+    }
+
+    /**
+     * RFC2421 section 4.2.14: A hint from the sender how important a message is.
+     *
+     * @param string $importance Can be high, normal or low.
+     */
+    public function setImportance($importance)
+    {
+        if ($importance !== 'high' &&
+            $importance !== 'normal' &&
+            $importance !== 'low') {
+            throw new InvalidArgumentException(sprintf('Invalid %1$s value.', '$importance'));
+            return;
+        }
+
+        $this->importance = $importance;
+    }
+
+    /**
+     * RFC2156: Autosubmitted header.
+     * If you are sending a 'templated' standard message you should set it at: auto-generated.
+     *
+     * @param string $autoSubmitted Can be "not-auto-submitted", "auto-generated", "auto-replied" 
+     *                              or "auto-forwarded".
+     */
+    public function setAutosubmitted($autoSubmitted)
+    {
+        $autoSubmittedLowercase = mb_strtolower($autoSubmitted);
+        if ($autoSubmittedLowercase !== '' &&
+            $autoSubmittedLowercase !== 'not-auto-submitted' &&
+            $autoSubmittedLowercase !== 'auto-generated' &&
+            $autoSubmittedLowercase !== 'auto-replied' &&
+            $autoSubmittedLowercase !== 'auto-forwarded') {
+            throw new InvalidArgumentException(sprintf('Invalid %1$s value.', '$autoSubmitted'));
+            return;
+        }
+
+        $this->autosubmitted = $autoSubmittedLowercase;
+    }
+
+    /**
+     * Unofficial. Use the X-Priority header.
+     * warning the use of this header is not recommeded.
+     *
+     * @param bool $useXPriority True to use the X-Priority header to define the priority based on
+     *                           a scale from 1(highest) to 5(lowest) of the message.
+     */
+    public function setUseXPriority($useXPriority)
+    {
+        $this->usexpriority = (bool)$useXPriority;
+    }
+
+    /**
+     * Set the OpenPGP short KeyId.
+     *
+     * @param string $pgpKeyId The hexidecimal PGP key-Id.
+     */
+    public function setPgpkeyid($pgpKeyId)
+    {
+        if (strlen($pgpKeyId) < 8) {
+            throw new InvalidArgumentException('PGP Key-Id too short.');
+        }
+
+        $this->pgpkeyid = $pgpKeyId;
+    }
+
+    /**
+     * Set the OpenPGP fingerprint.
+     *
+     * @param string $pgpKeyFingerprint The hexidecimal PGP key fingerprint.
+     */
+    public function setPgpkeyfingerprint($pgpKeyFingerprint)
+    {
+        if (strlen($pgpKeyFingerprint) < 40) {
+            throw new InvalidArgumentException('PGP fingerprint too short.');
+        }
+
+        $this->pgpkeyfingerprint = $pgpKeyFingerprint;
+    }
+
+    /**
+     * Key server to get the OpenPGP public key.
+     *
+     * @param string $pgpKeyserverUrl A url to a server to get the PGP key from.
+     */
+    public function setPgpkeygetkeyserverurl($pgpKeyserverUrl)
+    {
+        if (!filter_var($pgpKeyserverUrl, FILTER_VALIDATE_URL)) {
+            throw new InvalidArgumentException(sprintf('%1$s is not a valid URL.', '$pgpKeyserverUrl'));
+            return;
+        }
+
+        $this->pgpkeygetkeyserverurl = $pgpKeyserverUrl;
+    }
+
+    /**
+     * RFC2421 section 4.2.13 Indicates the requested privacy level.
+     *
+     * @param string $sensitivity The sensitivity level of the message.
+     *                            This can be: "personal", "private" or "confidential".
+     */
+    public function setSensitivity($sensitivity)
+    {
+        if ($sensitivity !== '' &&
+            $sensitivity !== 'personal' &&
+            $sensitivity !== 'private' &&
+            $sensitivity !== 'confidential') {
+            throw new InvalidArgumentException(sprintf('Invalid %1$s value.', '$sensitivity'));
+            return;
+        }
+
+        $this->sensitivity = $sensitivity;
+    }
+
+    /**
+     * unofficial. E-mail address for reporting abuse for this message.
+     *
+     * @param string $abuseEmailAddr The e-mail address to report abuse on.
+     */
+    public function setAbuseemail($abuseEmailAddr)
+    {
+        if (!filter_var($abuseEmailAddr, FILTER_VALIDATE_EMAIL) ||
+            strpos($abuseEmailAddr, ' ') !== false ||
+            strpos($abuseEmailAddr, "\r") !== false ||
+            strpos($abuseEmailAddr, "\n") !== false) {
+            throw new InvalidArgumentException(sprintf('The %1$s value is not a valid e-mail address.', $abuseEmailAddr));
+            return;
+        }
+
+        $this->abuseemail = $abuseEmailAddr;
+    }
+
+    /**
+     * unofficial. Information url for reporting abuse for this message.
+     *
+     * @param string $abuseUrl A url to report abuse on.
+     */
+    public function setAbuseurl($abuseUrl)
+    {
+        if (!filter_var($abuseUrl, FILTER_VALIDATE_URL)) {
+            if (!empty($abuseUrl)) {
+                throw new InvalidArgumentException(sprintf('%1$s is not a valid URL.', $abuseUrl));
+            } else {
+                throw new InvalidArgumentException(sprintf('No valid URL provided.', $abuseUrl));
+            }
+        }
+
+        $this->abuseurl = $abuseUrl;
+    }
+
+    /**
+     * unofficial. Should the ip address of the client/user be included in the message.
+     *
+     * @param bool $includeIpSender True to include the ip address of the submitter of the message, 
+     *                              it will be encrypted if setUseencodedip is set to true.
+     */
+    public function setIncludeipsender($includeIpSender)
+    {
+        $this->includeipsender = (bool)$includeIpSender;
+    }
+
+    /**
+     * unofficial. Include an encrypted the ip address of the requested sender in the header.
+     * warning: mcrypt php extension needs to be loaded to use it.
+     * 
+     * @param bool $useEncodedIp If true the X-EIP header will be added and the X-Originating-IP will not be used.
+     */
+    public function setUseencodedip($useEncodedIp)
+    {
+        if (!extension_loaded('mcrypt') && !function_exists('openssl_encrypt') && $useEncodedIp) {
+            error_log('mcrypt php extension not loaded and openssl_encrypt also not available, privacy risk because encrypted X-EIP not used.');
+        } else {
+            $this->useencodedip = (bool)$useEncodedIp;
+        }
+    }
+
+    /**
+     * The secret encryption key for encrypting the ip address and the ciphertext is included in the
+     * X-EIP header of the message. It's recommended to use a key that is at least 16 characters
+     * or longer.
+     *
+     * @param string $eipEncryptionKey The secret encryption key used for generating the X-EIP header.
+     */
+    public function setEipencryptionkey($eipEncryptionKey)
+    {
+        $this->eipencryptionkey = $eipEncryptionKey;
+    }
+
+    /**
+     * unofficial. Report the client software used. This is PHP/Major.Minor version numbers.
+     *
+     * @param bool $reportMailer True to report the version of PHP used.
+     */
+    public function setReportmailer($reportMailer)
+    {
+        $this->reportmailer = (bool)$reportMailer;
+    }
+
+    /**
+     * Request for the receiving mailclient/MUA to send a Delivery Status Notification/DSN message as soon as the person opens the email.
+     * Warning a lot of mailclients/MUA's will warn the user before sending a Delivery Status Notification/DSN message.
+     * It's also possible that always a "denied" disposition message is send.
+     *
+     * @param string $dispositionNotificationEmail The e-mail address that receives the DSN.
+     */
+    public function setDispositionnotificationto($dispositionNotificationEmail)
+    {
+        if (!filter_var($dispositionNotificationEmail, FILTER_VALIDATE_EMAIL) ||
+            strpos($dispositionNotificationEmail, ' ') !== false ||
+            strpos($dispositionNotificationEmail, "\r") !== false ||
+            strpos($dispositionNotificationEmail, "\n") !== false) {
+            throw new InvalidArgumentException(sprintf('The %1$s value is not a valid e-mail address.', $dispositionNotificationEmail));
+            return;
+        }
+
+        $this->dispositionnotificationto = $dispositionNotificationEmail;
+    }
+
+    /**
+     * Request for the receiving mail server/MTA to send a DSN (delivery status notification) as soon as it receives the email.
+     *
+     * @param string $returnReceiptToEmail The email address that receives the DSN.
+     */
+    public function setReturnreceiptto($returnReceiptToEmail)
+    {
+        if (!filter_var($returnReceiptToEmail, FILTER_VALIDATE_EMAIL) ||
+            strpos($returnReceiptToEmail, ' ') !== false ||
+            strpos($returnReceiptToEmail, "\r") !== false ||
+            strpos($returnReceiptToEmail, "\n") !== false) {
+            throw new InvalidArgumentException(sprintf('The %1$s value is not a valid e-mail address.', $returnReceiptToEmail));
+            return;
+        }
+
+        $this->returnreceiptto = $returnReceiptToEmail;
+    }
+
+    /**
+     * Delay in miliseconds in this script before try sending of the mail to the MTA.
+     * It gives the user of a webform some short time to quickly abort before the mail is send.
+     *
+     * @param int $delayMiliseconds A positive number of miliseconds to delay the sending of the mail.
+     */
+    public function setDelay($delayMiliseconds)
+    {
+        if ($delayMiliseconds < 0) {
+            throw new InvalidArgumentException(sprintf('Invalid %1$s value.', '$delayMiliseconds'));
+        }
+
+        $this->delay = (int)$delayMiliseconds;
+    }
+
+    /**
+     * Use the X-Hashcash proof of work anti-spam header.
+     * Enabling hashcash will make send a mails very slow as designed.
+     *
+     * @param bool $useHashCash True to generate the HashCash header. Requires a lot of CPU use 
+     *                          and the Hashcash class.
+     */
+    public function setUsehashcash($useHashCash)
+    {
+        if ($useHashCash) {
+            require_once(__DIR__ .'/Hashcash.php');
+        }
+
+        $this->usehashcash = (bool)$useHashCash;
+    }
+
+    /**
+     * Use S/MIME to (only)sign the message. 
+     * This requires a S/MIME certificate signed by a trusted CA and the private key of the certificate.
+     *
+     * @param bool $useSmimeSigning True to sign the message with S/MIME.
+     */
+    public function setUsesmime($useSmimeSigning)
+    {
+        $this->usesmime = (bool)$useSmimeSigning;
+    }
+
+    /**
+     * The S/MIME cache folder to store the signed and unsigned messages.
+     *
+     * @param string $smimeCacheFolder A path to a not public folder.
+     */
+    public function setSmimecachefolder($smimeCacheFolder)
+    {
+        if (!is_dir($smimeCacheFolder)) {
+            throw new Exception(sprintf('%1$s value is not a folder.', '$smimeCacheFolder'));
+        }
+
+        $this->smimecachefolder = $smimeCacheFolder;
+    }
+
+    /**
+     * Set the S/MIME public certificate.
+     *
+     * @param string $smimePublicKey The file path to the public certificate.
+     */
+    public function setSmimekeypublic($smimePublicKey)
+    {
+        if (!is_file($smimePublicKey)) {
+            throw new Exception(sprintf('The %1$s value is not valid file path.', $smimePublicKey));
+        }
+
+        $this->smimekeypublic = $smimePublicKey;
+    }
+
+    /**
+     * Set the S/MIME private key for the S/MIME certificate.
+     *
+     * @param string $smimePrivateKey The file path to the (possible encypted)certificate.
+     */
+    public function setSmimekeyprivate($smimePrivateKey)
+    {
+        if (!is_file($smimePrivateKey)) {
+            throw new Exception(sprintf('The %1$s value is not a file.', '$smimePrivateKey'));
+        }
+
+        $this->smimekeyprivate = $smimePrivateKey;
+    }
+
+    /**
+     * Set the keyphrase for the private key for the S/MIME certificate.
+     *
+     * @param string $smimekeyprivatepassphrase The secret passphrase to decrypt the private certificate.
+     */
+    public function setSmimekeyprivatepassphrase($smimekeyprivatepassphrase)
+    {
+        $this->smimekeyprivatepassphrase = $smimekeyprivatepassphrase;
+    }
+
+    /**
+     * Set the intermediate CA Certificates.
+     */
+    public function setSmimeextracerts($smimeExtraCerts)
+    {
+        if (!is_file($smimeExtraCerts)) {
+            throw new Exception(sprintf('The %1$s value is not a file.', '$smimeExtraCerts'));
+        }
+
+        $this->smimeextracerts = $smimeExtraCerts;
+    }
+
+    /**
+     * Override the magic __debugInfo method (new in PHP 5.6.0) because
+     * if the method isn't defined on an object, then ALL public, protected and private properties could be shown.
+     */
+    public function __debugInfo()
+    {
+        return array('error' => '__debugInfo disabled.');
+    }
+
+    /**
+     * Override the magic __toString method.
+     */
+    public function __toString()
+    {
+        return '__toString disabled.';
+    }
+
+    /**
+     * Sends an e-mail
+     *
+     * @param string $emailto   An valid e-mail address (required).
+     * @param string $emailfrom An valid e-mail address (required).
+     * @param string $subject   Subject of the email (required).
+     * @param string $body      The message body of the email, by default text/plain MIME. (required).
+     * @param string $nameto    The full name of the receiver. (optional)
+     * @param string $namefrom  The full name of the sender. (optional)
+     * @return bool True if mail sended or added in queue succesfully.
+     */
+    public function Send($emailto, $emailfrom, $subject, $body, $nameto = '', $namefrom = '')
+    {
+        if (empty($emailto)) {
+            return false;
+        }
+
+        if (empty($emailfrom)) {
+            return false;
+        }
+
+        if (empty($subject)) {
+            return false;
+        }
+
+        if (empty($body)) {
+            return false;
+        }
+
+        if (!filter_var($emailfrom, FILTER_VALIDATE_EMAIL) ||
+            strpos($emailfrom, ' ') !== false ||
+            strpos($emailfrom, "\r") !== false ||
+            strpos($emailfrom, "\n") !== false) {
+            return false;
+        }
+
+        if (empty($this->returnpath)) {
+            $this->returnpath = $emailfrom;
+        }
+
+        if (empty($this->messagecharset)) {
+            $this->messagecharset = 'UTF-8';
+        }
+
+        $headers = '';
+        $this->addHeaderLine('Return-Path', $this->returnpath, $headers);
+        $fromVal = $emailfrom;
+        if ($this->isValidName($namefrom) && 
+            !empty($namefrom)) {
+            $fromVal = $namefrom.' <'.$emailfrom.'>';
+        }
+
+        $this->addHeaderLine('From', $fromVal, $headers);
+        if (!empty($this->replyto)) {
+                $this->addHeaderLine('Reply-To', $this->replyto, $headers);
+        }
+
+        if (!empty($this->dispositionnotificationto)) {
+            $this->addHeaderLine('Disposition-Notification-To', $this->dispositionnotificationto, $headers);
+        }
+
+        if (!empty($this->returnreceiptto)) {
+            $this->addHeaderLine('Return-Receipt-To', $this->returnreceiptto, $headers);
+        }
+
+        if (!empty(self::MIMEVERSION) && ctype_digit((string) self::MIMEVERSION)) {
+            $headers .= 'MIME-Version: '.self::MIMEVERSION.CHRENTER;
+        }
+
+        if (!empty($this->autosubmitted)) {
+            $this->addHeaderLine('Auto-Submitted', $this->autosubmitted, $headers);
+        }
+
+        if ($this->precedencebulk) {
+            $this->addHeaderLine('Precedence', 'bulk', $headers);
+        }
+
+        if ($this->nondeliveryreport) {
+            $this->addHeaderLine('Prevent-NonDelivery-Report', 'true', $headers);
+        }
+
+        if (!empty($this->pgpkeygetkeyserverurl) && !empty($this->pgpkeyid) && !empty($this->pgpkeyfingerprint)) {
+            $this->addHeaderLine('OpenPGP', 'url="'.$this->pgpkeygetkeyserverurl.'"; id='.$this->pgpkeyid.';', $headers);
+            $this->addHeaderLine('X-PGP-Key', 'fp="'.$this->pgpkeyfingerprint.'"; id="'.$this->pgpkeyid.'"; get=<'.$this->pgpkeygetkeyserverurl.'>;', $headers);
+        } elseif (!empty($this->pgpkeygetkeyserverurl) && !empty($this->pgpkeyid)) {
+            $this->addHeaderLine('OpenPGP', 'url='.$this->pgpkeygetkeyserverurl.'; id='.$this->pgpkeyid.';', $headers);
+            $this->addHeaderLine('X-PGP-Key', 'fp="'.$this->pgpkeyfingerprint.'"; id="'.$this->pgpkeyid.'";', $headers);
+        } elseif (!empty($this->pgpkeygetkeyserverurl) && empty($this->pgpkeyid)) {
+            $this->addHeaderLine('OpenPGP', 'url='.$this->pgpkeygetkeyserverurl.';', $headers);
+        } elseif (empty($this->pgpkeygetkeyserverurl) && !empty($this->pgpkeyid) && !empty($this->pgpkeyfingerprint)) {
+            $this->addHeaderLine('OpenPGP', 'id='.$this->pgpkeyid.';', $headers);
+            $this->addHeaderLine('X-PGP-Key', 'fp="'.$this->pgpkeyfingerprint.'"; id="'.$this->pgpkeyid.'";', $headers);
+        } elseif (empty($this->pgpkeygetkeyserverurl) && !empty($this->pgpkeyid)) {
+            $this->addHeaderLine('OpenPGP', 'id='.$this->pgpkeyid.';', $headers);
+        }
+
+        if (!empty($this->sensitivity)) {
+            $this->addHeaderLine('Sensitivity', $this->sensitivity, $headers);
+        }
+
+        if (!empty($this->organization)) {
+            $this->addHeaderLine('Organization', $this->organization, $headers, 255);
+        }
+
+        if (!empty($this->reportmailer)) {
+            // We don't report the release version number or the extra section in the full php version string.
+            $this->addHeaderLine('X-Mailer', 'PHP/'.PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION, $headers);
+        }
+
+        if ($this->nopublicarchive) {
+            $this->addHeaderLine('X-No-Archive', 'Yes', $headers);
+        }
+
+        if (!empty($this->importance)) {
+            $this->addHeaderLine('Importance', $this->importance, $headers);
+            if ($this->usexpriority) {
+                // Set the unofficial x-priority based on the set importance headers.
+                // Possible X-Priority values are: 1 for highest, 2 for high/above-normal, 3 for normal, 4 for low/below-normal or 5 for lowest.
+                $xpriority = 3;
+                switch ($this->importance) {
+                    case 'high':
+                        $xpriority = 1;
+                        break;
+                    case 'low':
+                        $xpriority = 5;
+                        break;
+                }
+
+                $this->addHeaderLine('X-Priority', $xpriority, $headers);
+            }
+        }
+
+        if (!empty($this->abuseurl)) {
+            if (filter_var($this->abuseurl, FILTER_VALIDATE_URL)) {
+                $this->addHeaderLine('X-Abuse-Info', $this->abuseurl, $headers);
+            }
+        }
+
+        if (!empty($this->abuseemail)) {
+            if (filter_var($this->abuseemail, FILTER_VALIDATE_EMAIL) &&
+                strpos($this->abuseemail, ' ') === false &&
+                strpos($this->abuseemail, "\r") === false &&
+                strpos($this->abuseemail, "\n") === false) {
+                $this->addHeaderLine('X-Report-Abuse-To', $this->abuseemail, $headers, 255);
+                //$this->addHeaderLine('Abuse-Reports-To', $this->abuseemail, $headers, 255);
+                //$this->addHeaderLine('X-Notice', $this->abuseemail, $headers, 255);
+            }
+        }
+
+        if ($this->includeipsender) {
+            $ipaddr = $_SERVER['REMOTE_ADDR'];
+            if (filter_var($ipaddr, FILTER_VALIDATE_IP)) {
+                if ($this->useencodedip && !empty($this->eipencryptionkey) && 
+                    (extension_loaded('mcrypt') || function_exists('openssl_encrypt')) ) {
+                        $encodedip = '';
+                        if (function_exists('openssl_encrypt')) {
+                            // use openssl
+                            $openssl_cipher_str = 'aes-128-cfb';  // cipher should be in lowercase.
+                            if (!in_array($openssl_cipher_str, openssl_get_cipher_methods())) {
+                                error_log('Error '.$openssl_cipher_str.' not supported by openssl!');
+                            }
+
+                            $sizeiv = openssl_cipher_iv_length($openssl_cipher_str);
+                            $strongiv = true;
+                            $iv = openssl_random_pseudo_bytes($sizeiv, $strongiv);
+                            if (!$strongiv) {
+                                usleep(100000);  // Try again in 100 ms.
+                                $iv = openssl_random_pseudo_bytes($this->ivsize, $strongiv);
+                                if (!$strongiv) {
+                                    error_log('IV could not be generated on strong random data.');
+                                }
+                            }
+
+                            $rawencodedip = openssl_encrypt($ipaddr, $openssl_cipher_str, $this->eipencryptionkey, OPENSSL_ZERO_PADDING, $iv);
+                            $encodedip = base64_encode($iv).'/'.base64_encode($rawencodedip);
+                        } else {
+                            // use mcrypt
+                            $cipher = mcrypt_module_open(MCRYPT_RIJNDAEL_128, '', MCRYPT_MODE_CFB, '');
+                            // Using cipher feedback(CFB) mode, best mode for encrypting byte streams where single bytes must be encrypted.
+                            $sizeiv = mcrypt_get_iv_size(MCRYPT_RIJNDAEL_128, MCRYPT_MODE_CFB);
+                            // Use MCRYPT_DEV_RANDOM the blocking slow randomness generator.
+                            $iv = mcrypt_create_iv($sizeiv, MCRYPT_DEV_RANDOM);
+                            mcrypt_generic_init($cipher, $this->eipencryptionkey, $iv);
+                            $rawencodedip = mcrypt_generic($cipher, $ipaddr);
+                            $encodedip = base64_encode($iv).'/'.base64_encode($rawencodedip);
+                            mcrypt_generic_deinit($cipher);
+                            mcrypt_module_close($cipher);
+                        }
+
+                        // Include encrypted ip address in header.
+                        $this->addHeaderLine('X-EIP', $encodedip, $headers, self::MAILLINEMAXLENGTHHEADER);
+                } else {
+                    // Set unencrypted ip address in header.
+                    // The maximum length of a hexdec IPv6 address with IPv4 tunneling feature, is 45 characters.
+                    $this->addHeaderLine('X-Originating-IP', '['.$ipaddr.']', $headers, 65); // 'X-Originating-IP: []'=> 20 characters
+                }
+            }
+        }
+
+        $orgmessage = $body;
+        $body = '';
+        $numAttachments = count($this->attachments);
+        if ($numAttachments >= 1) {
+            // Has attachments
+            //$this->addHeaderLine('X-MS-Has-Attach', 'Yes', $headers);
+            $multipartmixed = $this->GenerateBoundary('');
+            if ($this->usesmime) {
+                // S/mime signing will add "Content-Type: multipart/signed" to headers already
+                // so Content-Type needs to be added to mail body instead.
+                $body .= 'Content-Type: multipart/mixed;'.CHRENTER;
+                $body .= "\t".'boundary="'.$multipartmixed.'"'.CHRENTER; // line folding
+                $body .= 'Content-Transfer-Encoding: quoted-printable'.CHRENTER;
+                $body .= CHRENTER;
+            } else {
+                $headers .= 'Content-Type: multipart/mixed;'.CHRENTER;
+                $headers .= "\t".'boundary="'.$multipartmixed.'"'.CHRENTER; // line folding
+            }
+
+            $body .= self::BOUNDARYPREFIX.$multipartmixed.CHRENTER;
+            if ($this->messagecontenttype === 'text/html') {
+                $multipartalternative = $this->GenerateBoundary($multipartmixed);
+                $body .= 'Content-Type: multipart/alternative;'.CHRENTER;
+                $body .= "\t".'boundary="'.$multipartalternative.'"'.CHRENTER; // line folding
+                $body .= 'Content-Transfer-Encoding: quoted-printable'.CHRENTER;
+                $body .= CHRENTER;
+                $body .= self::BOUNDARYPREFIX.$multipartalternative.CHRENTER;
+            }
+
+            // add plaintext content part
+            $this->addHeaderLine('Content-Type', 'text/plain; charset='.$this->messagecharset, $body, self::MAILLINEMAXLENGTHBODY);
+            $body .= 'Content-Transfer-Encoding: quoted-printable'.CHRENTER;
+            $body .= CHRENTER;
+            if ($this->messagecontenttype === 'text/html') {
+                // add text/plain fallback from text/html part
+                $body .= quoted_printable_encode($this->ConvertHtmlToText($orgmessage)).CHRENTER;
+
+                // add text/html part
+                $body .= self::BOUNDARYPREFIX.$multipartalternative.CHRENTER;
+                $this->addHeaderLine('Content-Type', $this->messagecontenttype.'; charset='.$this->messagecharset, $body, self::MAILLINEMAXLENGTHBODY);
+                $body .= 'Content-Transfer-Encoding: quoted-printable'.CHRENTER;
+                $body .= CHRENTER;
+                $body .= quoted_printable_encode($orgmessage).CHRENTER;
+            } else {
+                // add text/plain part
+                $body .= quoted_printable_encode($orgmessage).CHRENTER;
+            }
+
+            $body .= CHRENTER;
+
+            // Add attachments
+            $attachments = $this->attachments;
+            foreach ($attachments as $attachmentname => $attachment) {
+                $binaryFileContent = file_get_contents($attachment['file']);
+                if ($binaryFileContent === false) {
+                    error_log(sprint('Could not read %s.', $attachment['file']));
+                    continue;
+                }
+
+                $body .= self::BOUNDARYPREFIX.$multipartmixed.CHRENTER;
+                $this->addHeaderLine('Content-Type',
+                                     $attachment['mime'].'; name="'.$attachmentname.'"',
+                                     $body,
+                                     self::MAILLINEMAXLENGTHBODY);
+
+                // make file description shorter.
+                $headerKeyMime = 'Content-Type';
+                if (strlen($attachment['description']) > 253 - strlen($headerKeyMime)) {
+                    $this->addHeaderLine($headerKeyMime, substr($attachment['description'], 0, 253 - strlen($headerKeyMime)), $body, self::MAILLINEMAXLENGTHBODY);
+                } else {
+                    $this->addHeaderLine('Content-Description', $attachment['description'], $body, self::MAILLINEMAXLENGTHBODY);
+                }
+
+                $body .= 'Content-Transfer-Encoding: base64'.CHRENTER;
+                $body .= 'Content-Disposition: attachment;'.CHRENTER;
+                $body .= "\t".'filename="'.$attachmentname.'"; size='.$attachment['size'].';'.CHRENTER; // line folding
+                $body .= CHRENTER;
+                $body .= chunk_split(base64_encode($binaryFileContent)); 
+            }
+
+            $body .= self::BOUNDARYPREFIX.$multipartmixed.self::ENDPARTSUFFIX.CHRENTER;
+        } else {
+            // No attachments.
+            //$this->addHeaderLine('X-MS-Has-Attach', 'No', $headers);
+            $multipartalternative = '';
+            if ($this->messagecontenttype === 'text/html') {
+                $multipartalternative = $this->GenerateBoundary('');
+            }
+
+            if ($this->usesmime) {
+                // S/mime signing will add "Content-Type: multipart/signed" to headers already
+                // so Content-Type needs to be added to mail body instead.
+                if ($this->messagecontenttype === 'text/html') {
+                    // Create fallback part so use multipart/alternative.
+                    //$body .= CHRENTER;
+                    //$body .= self::BOUNDARYPREFIX.$multipartalternative.CHRENTER;
+                    $body .= 'Content-Type: multipart/alternative;'.CHRENTER;
+                    $body .= "\t".'boundary="'.$multipartalternative.'"'.CHRENTER; // line folding
+                    $body .= CHRENTER;
+                } else {
+                    $this->addHeaderLine('Content-Type', $this->messagecontenttype.'; charset='.$this->messagecharset, $body, self::MAILLINEMAXLENGTHHEADER);
+                    $body .= 'Content-Transfer-Encoding: quoted-printable'.CHRENTER;
+                    $body .= CHRENTER;
+                }
+            } else {
+                if ($this->messagecontenttype === 'text/html') {
+                    // Create fallback so use multipart/alternative in header.
+                    $headers .= 'Content-Type: multipart/alternative;'.CHRENTER;
+                    $headers .= "\t".'boundary="'.$multipartalternative.'"'.CHRENTER; // line folding
+                } else {
+                    $this->addHeaderLine('Content-Type', $this->messagecontenttype.'; charset='.$this->messagecharset, $headers, self::MAILLINEMAXLENGTHHEADER);
+                }
+            }
+
+            if ($this->messagecontenttype === 'text/html') {
+                // add text/plain fallback
+                $body .= self::BOUNDARYPREFIX.$multipartalternative.CHRENTER;
+                $this->addHeaderLine('Content-Type', 'text/plain; charset='.$this->messagecharset, $body, self::MAILLINEMAXLENGTHBODY);
+                $body .= 'Content-Transfer-Encoding: quoted-printable'.CHRENTER;
+                $body .= CHRENTER;
+                $body .= quoted_printable_encode($this->ConvertHtmlToText($orgmessage)).CHRENTER;
+
+                // add text/html part
+                $body .= self::BOUNDARYPREFIX.$multipartalternative.CHRENTER;
+                $this->addHeaderLine('Content-Type', $this->messagecontenttype.'; charset='.$this->messagecharset, $body, self::MAILLINEMAXLENGTHBODY);
+                $body .= 'Content-Transfer-Encoding: quoted-printable'.CHRENTER;
+                $body .= CHRENTER;
+            }
+
+            $body .= quoted_printable_encode($orgmessage).CHRENTER;
+        }
+
+        $headers .= 'Content-Transfer-Encoding: quoted-printable'.CHRENTER;
+        if (!empty($this->returnpath)) {
+            if (strpos($this->returnpath, ':') !== false ||
+                strpos($this->returnpath, "\r") !== false ||
+                strpos($this->returnpath, "\n") !== false) {
+                return;
+            }
+
+            $arguments = '-f '.escapeshellarg($this->returnpath);
+        }
+
+        if ($this->usehashcash) {
+            $hashcash = new Hashcash(self::DEFAULTHASHCASHCALCBITS, $emailto);
+            try {
+                $this->addHeaderLine('X-Hashcash', $hashcash->mint(), $headers);
+            } catch (Exception $hashcashExc) {
+                error_log('Generation hashcash header error: '.$hashcashExc->getMessage());
+            }
+        }
+
+        if ($this->usesmime) {
+            $suffix = date('Y-m-d').'_'.mt_rand(1,PHP_INT_MAX).'.eml';
+            $filenameMsgUnsigned = 'msgunsigned_'.$suffix;
+            $filenameMsgSigned = 'msgsigned_'.$suffix;
+
+            $fpWriteMsgUnsigned = fopen($this->smimecachefolder.$filenameMsgUnsigned, 'w');
+            fwrite($fpWriteMsgUnsigned, $body);
+            fclose($fpWriteMsgUnsigned);
+
+            define('FILEPROTOHANDLER', 'file://');
+            if (!openssl_pkcs7_sign(
+                    $this->smimecachefolder.$filenameMsgUnsigned,
+                    $this->smimecachefolder.$filenameMsgSigned,
+                    FILEPROTOHANDLER.$this->smimekeypublic,
+                    array(FILEPROTOHANDLER.$this->smimekeyprivate, $this->smimekeyprivatepassphrase),
+                    array(),
+                    PKCS7_DETACHED,
+                    $this->smimeextracerts)) {
+                error_log('Error Could not smime sign email.');
+                return false;
+            }
+
+            if ($fpMsgSigned = fopen($this->smimecachefolder.$filenameMsgSigned, 'c+')) {
+                if (!flock($fpMsgSigned, LOCK_EX)) {
+                    fclose($fpMsgSigned);
+                }
+
+                $body = '';
+                $linenr = 0;
+                $offset = 0;
+                $lenSignedFile = filesize($this->smimecachefolder.$filenameMsgSigned); // may return unexpected results for files which are larger than 2GB.
+                while (($line = fgets($fpMsgSigned, self::MAILLINEMAXLENGTHBODY)) !== false) {
+                    $linenr++;
+                    $lenline = strlen($line);
+                    if ($linenr < 3) {
+                        $offset += $lenline;
+                        // Added the first 3 lines to $headers and remove them from $body.
+                        $headers .= $line;
+                        continue;
+                    }
+
+                    if ($linenr === PHP_INT_MAX) {
+                        error_log('Exceeded maximum number of lines. abort.');
+                        break;
+                    }
+
+                    $pos = ftell($fpMsgSigned);
+                    fseek($fpMsgSigned, $pos - $lenline - $offset);
+                    fputs($fpMsgSigned, $line);
+                    fseek($fpMsgSigned, $pos);
+                }
+
+                fflush($fpMsgSigned);
+                ftruncate($fpMsgSigned, ($lenSignedFile - $offset));
+                flock($fpMsgSigned, LOCK_UN);
+                fclose($fpMsgSigned);
+            }
+        }
+
+        if ($this->delay > 0) {
+            // Deliberately delay sending the e-mail so maybe it gives the end user still some time to abort quickly.
+            usleep($this->delay);
+        }
+
+        if ($this->debugmode) {
+            header('X-Robots-Tag: noindex');
+            header('X-Content-Type-Options: nosniff');
+            header('Content-Type: message/rfc822');
+            header('Content-Disposition: attachment; filename="maildebug.eml"');
+            $mail = $headers;
+            $this->addHeaderLine('To', $emailto, $mail);
+            $this->addHeaderLine('Subject', $subject, $mail);
+            if (!$this->usesmime) {
+                $mail .= CHRENTER;
+            }
+
+            $mail .= $body.CHRENTER;
+            echo $mail;
+            return true;
+        }
+
+        // Send the mail with sendmail.
+        return mail($emailto, $subject, $body, $headers, $arguments);
+    }
+
+    /**
+     * Add a attachment to a e-mail.
+     *
+     * @param string $file           The file path to the file to include in the message.
+     * @param string $attachmentname The filename of the attachment in the message. This can be different than $file.
+     * @param string $mimetype       The MIME type of the attachment e.g. application/pdf or image/png etc.
+     * @param string $description    The description text of the attachment. Not used by all mail clients.
+     */
+    public function addAttachment($file, $attachmentname, $mimetype, $description = '')
+    {
+        if (empty($mimetype)) {
+            throw new Exception('Mime type for attachment not given.');
+            return false;
+        }
+
+        if (!file_exists($file)) {
+            throw new Exception('File does not exists.');
+            return false;
+        }
+
+        if (empty($description) && !empty($attachmentname)) {
+            $description = $attachmentname;
+        }
+
+        if (strlen($description) > self::MAILLINEMAXLENGTHBODY) {
+            throw new Exception('Description too long.');
+            return false;
+        }
+
+        $size = filesize($file);
+        $this->attachments[$attachmentname] = array('file'=>$file, 'mime'=>$mimetype, 'description'=>$description, 'size'=>$size);
+    }
+
+   /**
+    * Add a header to headers string. Checks for illegal characters and line length.
+    * 
+    * @param string $property
+    * @param string $value
+    * @param string $headers  The reference to the headers to added a new line to if valid.
+    * @param int    $linelenlimit
+    */
+    private function addHeaderLine($property, $value, &$headers, $linelenlimit = self::MAILLINEMAXLENGTHHEADER)
+    {
+        if (strpos($value, ':') !== false) {
+            error_log('Error header value contains illegal keyvalue seperator/":" character.');
+            return;
+        }
+
+        if (strpos($value, "\r") !== false || strpos($value, "\n") !== false) {
+            error_log('Error header value contains illegal enter character(s).');
+            return;
+        }
+
+        $line = $property.': '.$value.CHRENTER;
+        if (strlen($line) < $linelenlimit) {
+            $headers .= $line;
+        } else {
+            error_log(sprintf('Header %1$s exceeded %2$d characters.', $property, $linelenlimit));
+        }
+    }
+
+    /**
+    * Convert a html message to text message without html tags.
+    * 
+    * @param string $htmlmessage
+    * @return string Text message without html tags.
+    */
+    private function ConvertHtmlToText($htmlmessage)
+    {
+        $posstartbody = stripos($htmlmessage, '<body');
+        if ($posstartbody !== false) {
+            // Only use body of html document.
+            $htmlmessage = substr($htmlmessage, $posstartbody);
+        }
+
+        // Convert html links to be insert als full url between [ ] characters, for a maximum of self::CONVMAILMAXLINKS.
+        $nlinks = 0;
+        $lenstartanchor = strlen('<a ');
+        $lenendnchor = strlen('</a>');
+        $posstartanchor = strrpos($htmlmessage, '<a ');
+        $poscloseanchor = strpos($htmlmessage, '</a>', $posstartanchor + $lenstartanchor);
+        while ($posstartanchor !== false && $poscloseanchor !== false && $nlinks < self::CONVMAILMAXLINKS) {
+            ++$nlinks;
+            $posendopenanchor = strpos($htmlmessage, '>', $posstartanchor);
+            // Get the anchor attribute
+            $anchorattrs = substr($htmlmessage, $posstartanchor + $lenstartanchor, $posendopenanchor - $posstartanchor - $lenstartanchor);
+            // find the link href attribute.
+            $posstartlinkattr = strpos($anchorattrs, 'href="') + 6;
+            $posenlinkattr = strpos($anchorattrs, '"', $posstartlinkattr);
+            $link = substr($anchorattrs, $posstartlinkattr, $posenlinkattr-$posstartlinkattr);
+            // fix urlencoding ampersand
+            $link = str_replace('&amp;', '&', $link);
+            if (filter_var($link, FILTER_VALIDATE_URL)) {
+                // insert the link after the close anchor tag
+                $posafterendachor = $poscloseanchor + $lenendnchor;
+                $prehtmlmessage = substr($htmlmessage, 0, $posafterendachor);
+                $posthtmlmessage = substr($htmlmessage, $posafterendachor);
+                $htmlmessage = $prehtmlmessage.'['.$link.']'.$posthtmlmessage;
+            }
+
+            // find new anchor
+            $posfromend = -(strlen($htmlmessage)-$posstartanchor)-1;
+            $posstartanchor = strrpos($htmlmessage, '<a ',$posfromend);
+            $poscloseanchor = strpos($htmlmessage, '</a>', $posstartanchor);
+        }
+
+        // Replace HTML <br> tags with enter characters.
+        $htmlmessage = str_ireplace(array('<br>', '<br />', '<br/>'), CHRENTER, $htmlmessage);
+        // Replace HTML <b> tags with * characters.
+        $htmlmessage = str_ireplace(array('<b>', '</b>', '<h1>', '</h1>', '<h2>', '</h2>', '<h3>', '</h3>'), '*', $htmlmessage);
+        // Replace HTML <u> tags with _ characters.
+        $htmlmessage = str_ireplace(array('<u>', '</u>'), '_', $htmlmessage);
+        // Replace HTML <i> tags with / characters.
+        $htmlmessage = str_ireplace(array('<i>', '</i>'), '/', $htmlmessage);
+        // Now strip all html tages. Fixme: creates new blank lines.
+        $htmlmessage = strip_tags($htmlmessage);
+        // Remove html ingored space and tabs and for plaintext.
+        $htmlmessage = str_replace(array('  ', "\t"), '', $htmlmessage);
+        // Replace &nbsp; with space.
+        return str_ireplace('&nbsp;', ' ', $htmlmessage);
+    }
+
+    /**
+     * Generate a boundary for multipart messages fast.
+     * There are no requirement for the need for a secure pseudo random boundary value at all.
+     *
+     * @param string $previousBoundary
+     * @param int    $lenBoundary      Shorter boundary means slightly shorter message but higher change of collisions.
+     * @return string The new boundary value. It should never be the same are previous generated boundaries for current mail.
+     */
+    private function GenerateBoundary($previousBoundary, $lenBoundary = 32)
+    {
+        if ($lenBoundary <= 0) {
+            return;
+        }
+
+        $lenMessageDigest = null;
+        $newBoundary = '';
+        $remainingLenBoundary = $lenBoundary;
+        while ($remainingLenBoundary > 0) {
+            $newBoundaryPart = hash('crc32b', mt_rand(0, PHP_INT_MAX), false);
+            if (is_null($lenMessageDigest)) {
+                $lenMessageDigest = strlen($newBoundaryPart);
+            }
+
+            if ($remainingLenBoundary < $lenMessageDigest) {
+                $newBoundaryPart = substr($newBoundaryPart, 0, $remainingLenBoundary);
+            }
+
+            $newBoundary .= strtoupper($newBoundaryPart);
+            $remainingLenBoundary -= $lenMessageDigest;
+        }
+
+        if ($newBoundary === $previousBoundary) {
+            $newBoundary = GenerateBoundary($previousBoundary, $lenBoundary);
+        }
+
+        return $newBoundary;
+    }
+
+    /**
+     * Check if from/to name does not contain illegal characters used for specifing the email address.
+     */
+    private isValidName($name)
+    {
+        if (strpos($fromName, '<') !== false ||
+            strpos($fromName, '>') !== false) {
+                return false;
+        }
+        
+        return true;
+    }
+}

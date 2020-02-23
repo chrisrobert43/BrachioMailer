@@ -2,5 +2,6 @@
 
 An opensourced class for creating mail message(s) to send off 
  with the php mail function. BrachioMailer can be configured
- to set several normal and exotic mail headers.
+ to set several normal and exotic mail headers. 
+ Including the hashcash proof of work mail header.
  

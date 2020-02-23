@@ -457,8 +457,7 @@ class BrachioMailer {
     }
 
     /**
-     * Delay in miliseconds in this script before try sending of the mail to the MTA.
-     * It gives the user of a webform some short time to quickly abort before the mail is send.
+     * Delay in miliseconds before try sending the mail to the MTA.
      *
      * @param int $delayMiliseconds A positive number of miliseconds to delay the sending of the mail.
      */

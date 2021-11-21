@@ -1,6 +1,6 @@
 <?php
 /*
- * Copyright (c) 2020, D9ping
+ * Copyright (c) 2020-2021, D9ping
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -37,9 +37,10 @@ class BrachioMailer {
 
     const MAILLINEMAXLENGTHHEADER = 998;
 
-    // Sendmail relay support 2040 characters per line this is the known maximum line length used. 
-    // see http://www.jebriggs.com/blog/2010/07/smtp-maximum-line-lengths/
-    const MAILLINEMAXLENGTHBODY = 2038;
+    // Sendmail relay support actually support up till 2040 characters per line. http://www.jebriggs.com/blog/2010/07/smtp-maximum-line-lengths/
+    // We try to limit it to 998 characters excluding enters(\r\n)
+    //  as a MUST in RFC 5322.
+    const MAILLINEMAXLENGTHBODY = 998;
 
     const CONVMAILMAXLINKS = 32;
 
@@ -59,6 +60,7 @@ class BrachioMailer {
     private $organization = null;
     private $replyto = null;
     private $returnpath = null;
+    private $scheduleFor = false;
     private $precedencebulk = false;
     private $nopublicarchive = false;
     private $nondeliveryreport = false;
@@ -66,6 +68,8 @@ class BrachioMailer {
     private $pgpkeyid = null;
     private $pgpkeyfingerprint = null;
     private $pgpkeygetkeyserverurl = null;
+    private $pgpSignKeyFp = '';
+    private $pgpEncryptPubKeyFp = '';
     private $sensitivity = null;
     private $abuseemail = null;
     private $abuseurl = null;
@@ -88,7 +92,7 @@ class BrachioMailer {
      * Creating a new instance of BrachioMailer class.
      *
      * @param bool $debugmode In debug mode the generated mail message will be outputted to the
-     *                        client as eml file instead of being send/queued.
+     *                        client as eml file instead of being send/scheduled.
      */
     public function __construct($debugmode = false)
     {
@@ -113,9 +117,9 @@ class BrachioMailer {
     }
 
     /**
-     * The characterset of the data part of the message.
+     * The character set of the data part of the message.
      *
-     * @param string $messageCharset The charset of the content of the message. 
+     * @param string $messageCharset The character set of the content of the message. 
      *                               E.g. this can be: "7bit", "8bit", "UCS-4" etc.
      */
     public function setMessagecharset($messageCharset)
@@ -144,7 +148,7 @@ class BrachioMailer {
     /**
      * Unofficial. RFC 1036 2.2.8. The organization of the send message.
      *
-     * @param string $organization The organisation(company) that sends the message.
+     * @param string $organization The organization that sends the message.
      */
     public function setOrganization($organization)
     {
@@ -457,17 +461,17 @@ class BrachioMailer {
     }
 
     /**
-     * Delay in miliseconds before try sending the mail to the MTA.
+     * Delay in milliseconds before try sending the mail to the MTA.
      *
-     * @param int $delayMiliseconds A positive number of miliseconds to delay the sending of the mail.
+     * @param int $delayMilliseconds A positive number of milliseconds to delay the handing off the email to sendmail.
      */
-    public function setDelay($delayMiliseconds)
+    public function setDelay($delayMilliseconds)
     {
-        if ($delayMiliseconds < 0) {
+        if ($delayMilliseconds < 0) {
             throw new InvalidArgumentException(sprintf('Invalid %1$s value.', '$delayMiliseconds'));
         }
 
-        $this->delay = (int)$delayMiliseconds;
+        $this->delay = (int)$delayMilliseconds;
     }
 
     /**
@@ -484,6 +488,32 @@ class BrachioMailer {
         }
 
         $this->usehashcash = (bool)$useHashCash;
+    }
+
+    /**
+     * Use the a database table to store scheduled mails to send at a later time.
+     *
+     * @param string $dateTime
+     */
+    public function ScheduleMailFor($dateTime)
+    {
+        if (empty($dateTime)) {
+            throw new InvalidArgumentException('Required date and time missing.');
+        }
+
+        if (file_exists(__DIR__ .'/config.php')) {
+            require_once(__DIR__ .'/config.php');
+        }
+        if (file_exists(__DIR__ .'/DB.php')) {
+            require_once(__DIR__ .'/DB.php');
+        }
+
+        if (is_readable(__DIR__ .'/d_Mailschedule.php')) {
+            require_once(__DIR__ .'/d_Mailschedule.php');
+            $this->scheduleFor = $dateTime;
+        } else {
+            exit('d_Mailschedule class not readable or missing.');
+        }
     }
 
     /**
@@ -540,7 +570,7 @@ class BrachioMailer {
     }
 
     /**
-     * Set the keyphrase for the private key for the S/MIME certificate.
+     * Set the passphrase for the private key for the S/MIME certificate.
      *
      * @param string $smimekeyprivatepassphrase The secret passphrase to decrypt the private certificate.
      */
@@ -587,7 +617,7 @@ class BrachioMailer {
      * @param string $body      The message body of the email, by default text/plain MIME. (required).
      * @param string $nameto    The full name of the receiver. (optional)
      * @param string $namefrom  The full name of the sender. (optional)
-     * @return bool True if mail sended or added in queue succesfully.
+     * @return bool True if mail is send or added in queue for sending later succesfully.
      */
     public function Send($emailto, $emailfrom, $subject, $body, $nameto = '', $namefrom = '')
     {
@@ -600,6 +630,25 @@ class BrachioMailer {
         }
 
         if (empty($subject)) {
+            return false;
+        }
+
+        // For the message to be stored in the database for scheduling the email
+        // the to and from address and the subject is limited to 255 characters.
+        // Excluding the header name e.g. 'Subject: '/'From:'  so we limit these
+        //  provided fields to 200 characters.
+        if (strlen($emailto) > 200) {
+            error_log('To may not be more than 200 characters.');
+            return false;
+        }
+
+        if (strlen($emailfrom) > 200) {
+            error_log('From may not be more than 200 characters.');
+            return false;
+        }
+
+        if (strlen($subject) > 200) {
+            error_log('Subject may not be more than 200 characters.');
             return false;
         }
 
@@ -624,15 +673,21 @@ class BrachioMailer {
 
         $headers = '';
         $this->addHeaderLine('Return-Path', $this->returnpath, $headers);
-        $fromVal = $emailfrom;
-        if ($this->isValidName($namefrom) && 
-            !empty($namefrom)) {
-            $fromVal = $namefrom.' <'.$emailfrom.'>';
+        if (empty($namefrom) || !$this->isValidName($namefrom)) {
+            $this->addHeaderLine('From', $emailfrom, $headers);
+        } else {
+            if (preg_match("/^[a-zA-Z0-9\s\.\-\'\\\\,\/]+$/", $namefrom)) {
+                // Only allow: a-z, A-Z, 0-9, space, dot, comma, dash, single quote, slash and backslash.
+                $this->addHeaderLine('From', $namefrom.' <'.$emailfrom.'>', $headers);
+            } else {
+                mb_internal_encoding('UTF-8');
+                $encFromName = mb_encode_mimeheader($namefrom, 'UTF-8', 'Q').' <'.$emailfrom.'>';
+                $this->addHeaderLine('From', $encFromName, $headers);
+            }
         }
 
-        $this->addHeaderLine('From', $fromVal, $headers);
         if (!empty($this->replyto)) {
-                $this->addHeaderLine('Reply-To', $this->replyto, $headers);
+            $this->addHeaderLine('Reply-To', $this->replyto, $headers);
         }
 
         if (!empty($this->dispositionnotificationto)) {
@@ -837,8 +892,13 @@ class BrachioMailer {
                 }
 
                 $body .= self::BOUNDARYPREFIX.$multipartmixed.CHRENTER;
+                $encodedAttachmentname = $attachmentname;
+                if (!preg_match("/^[a-zA-Z0-9\s\.\-\'\\\\,\/]+$/", $attachmentname)) {
+                    $encodedAttachmentname = mb_encode_mimeheader($attachmentname, 'UTF-8', 'Q');
+                }
+
                 $this->addHeaderLine('Content-Type',
-                                     $attachment['mime'].'; name="'.$attachmentname.'"',
+                                     $attachment['mime'].'; name="'.$encodedAttachmentname.'"',
                                      $body,
                                      self::MAILLINEMAXLENGTHBODY);
 
@@ -852,7 +912,7 @@ class BrachioMailer {
 
                 $body .= 'Content-Transfer-Encoding: base64'.CHRENTER;
                 $body .= 'Content-Disposition: attachment;'.CHRENTER;
-                $body .= "\t".'filename="'.$attachmentname.'"; size='.$attachment['size'].';'.CHRENTER; // line folding
+                $body .= "\t".'filename="'.$encodedAttachmentname.'"; size='.$attachment['size'].';'.CHRENTER;  // line folding
                 $body .= CHRENTER;
                 $body .= chunk_split(base64_encode($binaryFileContent)); 
             }
@@ -917,7 +977,10 @@ class BrachioMailer {
                 return;
             }
 
-            $arguments = '-f '.escapeshellarg($this->returnpath);
+            // The user that the webserver runs as should be added as a trusted user to the sendmail
+            // configuration to prevent a 'X-Warning' header from being added to the message when 
+            // the envelope sender (-f) is set using mail.
+            $arguments = '-f '.escapeshellarg($this->returnpath).' ';
         }
 
         if ($this->usehashcash) {
@@ -930,9 +993,9 @@ class BrachioMailer {
         }
 
         if ($this->usesmime) {
-            $suffix = date('Y-m-d').'_'.mt_rand(1,PHP_INT_MAX).'.eml';
-            $filenameMsgUnsigned = 'msgunsigned_'.$suffix;
-            $filenameMsgSigned = 'msgsigned_'.$suffix;
+            $dtRndPrefix = date('Y-m-d').'_'.mt_rand(1,PHP_INT_MAX);
+            $filenameMsgUnsigned = $dtRndPrefix.'_msg_unsigned.eml';
+            $filenameMsgSigned = $dtRndPrefix.'_msg_signed.eml';
 
             $fpWriteMsgUnsigned = fopen($this->smimecachefolder.$filenameMsgUnsigned, 'w');
             fwrite($fpWriteMsgUnsigned, $body);
@@ -959,13 +1022,14 @@ class BrachioMailer {
                 $body = '';
                 $linenr = 0;
                 $offset = 0;
-                $lenSignedFile = filesize($this->smimecachefolder.$filenameMsgSigned); // may return unexpected results for files which are larger than 2GB.
+                $lenSignedFile = $this->realFileSize($this->smimecachefolder.$filenameMsgSigned);
+                // Rewrite signed message to exclude email header
                 while (($line = fgets($fpMsgSigned, self::MAILLINEMAXLENGTHBODY)) !== false) {
                     $linenr++;
                     $lenline = strlen($line);
                     if ($linenr < 3) {
                         $offset += $lenline;
-                        // Added the first 3 lines to $headers and remove them from $body.
+                        // Added the first 2 lines to $headers and remove them from $body.
                         $headers .= $line;
                         continue;
                     }
@@ -975,22 +1039,39 @@ class BrachioMailer {
                         break;
                     }
 
+                    // ftell may return unexpected results for files which are larger than 2GB. 
                     $pos = ftell($fpMsgSigned);
+                    //error_log('linenr='.$linenr.',lenline='.$lenline.',pos='.$pos);
                     fseek($fpMsgSigned, $pos - $lenline - $offset);
                     fputs($fpMsgSigned, $line);
                     fseek($fpMsgSigned, $pos);
+                    $body .= $line;
                 }
 
                 fflush($fpMsgSigned);
-                ftruncate($fpMsgSigned, ($lenSignedFile - $offset));
+                if (bccomp($lenSignedFile, PHP_INT_MAX) !== 1) {
+                    ftruncate($fpMsgSigned, ($lenSignedFile - $offset));
+                }
+
                 flock($fpMsgSigned, LOCK_UN);
                 fclose($fpMsgSigned);
             }
         }
 
         if ($this->delay > 0) {
-            // Deliberately delay sending the e-mail so maybe it gives the end user still some time to abort quickly.
+            // Deliberately delay sending the e-mail.
             usleep($this->delay);
+        }
+
+        if ($this->scheduleFor !== false) {
+            // Schedule the mail to be send with sendmail.
+            $mysqlScheduleDtStr = $this->scheduleFor->format('Y-m-d H:i:s');
+            return d_Mailschedule::getInstance()->add($mysqlScheduleDtStr,
+                                                      $emailto,
+                                                      $subject,
+                                                      $arguments,
+                                                      $headers,
+                                                      $body);
         }
 
         if ($this->debugmode) {
@@ -1001,17 +1082,84 @@ class BrachioMailer {
             $mail = $headers;
             $this->addHeaderLine('To', $emailto, $mail);
             $this->addHeaderLine('Subject', $subject, $mail);
-            if (!$this->usesmime) {
-                $mail .= CHRENTER;
-            }
-
-            $mail .= $body.CHRENTER;
+            $mail .= CHRENTER;
+            $mail .= $body;
             echo $mail;
             return true;
         }
 
-        // Send the mail with sendmail.
+        // Directly send the mail with sendmail.
+        // It is worth noting that the mail() function is not suitable for larger volumes of email
+        // in a loop. Mail opens and closes an SMTP socket for each email, which is not very
+        // efficient. 
         return mail($emailto, $subject, $body, $headers, $arguments);
+    }
+
+    /**
+     * Progress the scheduled mail database table to see if mail can be send and removed
+     *  from the schedule mail queue.
+     */
+    public function ProcressSchedule($limit = 10)
+    {
+        if (!is_readable(__DIR__ .'/d_Schedulemail.php')) {
+            echo 'Error d_Schedulemail not found.';
+            return;
+        }
+
+        require_once(__DIR__ .'/d_Schedulemail.php');
+        $dtNow = new DateTime();
+        $emails = d_Schedulemail::getInstance()->GetAll(10);
+        foreach ($emails as &$email ) {
+            $dtScheduleFor = new DateTime($email['sendAfter']);
+            if ($dtScheduleFor > $dtNow) {
+                echo '- mail to '.$email['to'].' can be send.';
+            }
+
+            usleep(200000);  // wait 200 ms
+        }
+        
+    }
+
+    /**
+    * Return file size
+    * For file size over PHP_INT_MAX (2147483647 bytes / 2 Gb), PHP filesize function loops from
+    *  -PHP_INT_MAX to PHP_INT_MAX to workaround the 32bit signed integer limit on 32bits php.
+    *
+    * @param string $path Path of the file
+    * @return mixed File size(as string) or false if error
+    */
+    private function realFileSize($path)
+    {
+        $size = filesize($path);
+        if (!($file = fopen($path, 'rb'))) {
+            return false;
+        }
+
+        if ($size >= 0) {
+            if (fseek($file, 0, SEEK_END) === 0) {
+                fclose($file);
+                return $size;
+            }
+        }
+
+        // Quickly jump the first 2 GB with fseek. After that fseek is not working on 32 bit php (it uses int internally)
+        $size = PHP_INT_MAX - 1;
+        if (fseek($file, PHP_INT_MAX - 1) !== 0) {
+            fclose($file);
+            return false;
+        }
+
+        $length = 1024 * 1024;
+        // Read in chunks of 1MiB
+        while (!feof($file)) {
+            $read = fread($file, $length);
+            $size = bcadd($size, $length);
+        }
+
+        $size = bcsub($size, $length);
+        $size = bcadd($size, strlen($read));
+        fclose($file);
+        return $size;
     }
 
     /**
@@ -1043,7 +1191,11 @@ class BrachioMailer {
             return false;
         }
 
-        $size = filesize($file);
+        $size = $this->realFileSize($file);
+        if (!preg_match("/^[a-zA-Z0-9\s\.\-\'\\\\,\/]+$/", $description)) {
+            $description = mb_encode_mimeheader($description, 'UTF-8', 'Q');
+        }
+
         $this->attachments[$attachmentname] = array('file'=>$file, 'mime'=>$mimetype, 'description'=>$description, 'size'=>$size);
     }
 
@@ -1104,8 +1256,7 @@ class BrachioMailer {
             $posstartlinkattr = strpos($anchorattrs, 'href="') + 6;
             $posenlinkattr = strpos($anchorattrs, '"', $posstartlinkattr);
             $link = substr($anchorattrs, $posstartlinkattr, $posenlinkattr-$posstartlinkattr);
-            // fix urlencoding ampersand
-            $link = str_replace('&amp;', '&', $link);
+            $link = rawurldecode($link);
             if (filter_var($link, FILTER_VALIDATE_URL)) {
                 // insert the link after the close anchor tag
                 $posafterendachor = $poscloseanchor + $lenendnchor;
@@ -1122,8 +1273,8 @@ class BrachioMailer {
 
         // Replace HTML <br> tags with enter characters.
         $htmlmessage = str_ireplace(array('<br>', '<br />', '<br/>'), CHRENTER, $htmlmessage);
-        // Replace HTML <b> tags with * characters.
-        $htmlmessage = str_ireplace(array('<b>', '</b>', '<h1>', '</h1>', '<h2>', '</h2>', '<h3>', '</h3>'), '*', $htmlmessage);
+        // Replace HTML <em> and <b> tags with * characters.
+        $htmlmessage = str_ireplace(array('<em>', '</em>', '<b>', '</b>', '<h1>', '</h1>', '<h2>', '</h2>', '<h3>', '</h3>'), '*', $htmlmessage);
         // Replace HTML <u> tags with _ characters.
         $htmlmessage = str_ireplace(array('<u>', '</u>'), '_', $htmlmessage);
         // Replace HTML <i> tags with / characters.
@@ -1176,14 +1327,16 @@ class BrachioMailer {
 
     /**
      * Check if from/to name does not contain illegal characters used for specifing the email address.
+     *
+     * @param string $fromName The from name to check on illegal characters.
      */
-    private isValidName($name)
+    private function isValidName($fromName)
     {
         if (strpos($fromName, '<') !== false ||
             strpos($fromName, '>') !== false) {
-                return false;
+            return false;
         }
-        
+
         return true;
     }
 }

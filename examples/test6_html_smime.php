@@ -12,7 +12,7 @@ $messagehtml = '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
 	<body>
 		<h1>test message4</h1>
 		<p>This is the <i>fourth</i> <b>test message</b>.<br />
-		With use of HTML (with plaintext fallback) and a textfile attachment.</p>
+		With use of HTML (with plain text fall-back) and a text file attachment.</p>
 	</body>
 </html>
 ';

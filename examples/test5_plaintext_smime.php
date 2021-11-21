@@ -4,7 +4,7 @@ require_once('../BrachioMailer.php');
 $currentpath = str_replace('\\', '/', realpath('.')) . '/';
 $messagetext = 'hi,
 
-This is a S/MIME signed plaintext test message5.
+This is a S/MIME signed plain text test message5.
 (The S/MIME certificate is and cannot be signed by trusted CA.)
 
 Greeting,

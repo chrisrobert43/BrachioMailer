@@ -12,9 +12,9 @@ $messagehtml = '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
 	<body>
 		<h1>test message8</h1>
 		<p>This is the <b>html</b> test message8 with <b>attachment</b> and <b>S/MIME signed</b> !<br />
-		And there is use of HTML to plaintext fallback.</p>
+		And there is use of HTML to plain text fallback.</p>
 
-		<p>Please be carefull that the boundary structure in this mail can <br />
+		<p>Please be careful that the boundary structure in this mail can <br />
 		be too complex for some mail client/MUA.<br />
 		I have tested that it does work on Mozilla Thunderbird.</p>
 	</body>

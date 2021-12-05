@@ -24,11 +24,11 @@
  */
 class Hashcash {
 
-    const DATE_FORMAT = 'ymd';
+    const DATE_FORMATYMD = 'ymd';
     const DATE_FORMAT10 = 'ymdHi';
     const DATE_FORMAT12 = 'ymdHis';
-    const EXPIRATION = 604800‬; // 7 days
-    const MINT_ATTEMPTS_MAX = 10;
+    const MINT_EXPIRATION = '604800‬';
+    const MINT_ATTEMPTS_MAX = '10';
 
     private $version = 1;
     private $bits;
@@ -50,10 +50,10 @@ class Hashcash {
      */
     public function __construct($bits = 20, $resource = '') {
         $this->setBits($bits);
-        $this->setDate(date(static::DATE_FORMAT));
+        $this->setDate(date(self::DATE_FORMATYMD));
         $this->setResource($resource);
-        $this->setExpiration(static::EXPIRATION);
-        $this->setMintAttemptsMax(static::MINT_ATTEMPTS_MAX);
+        $this->setExpiration(self::MINT_EXPIRATION);
+        $this->setMintAttemptsMax(self::MINT_ATTEMPTS_MAX);
     }
 
     public function setVersion($version) {
@@ -63,7 +63,7 @@ class Hashcash {
             throw new RuntimeException(
                 'Version ' . $version . ' not implemented yet.', 2);
         }
-        
+
         $this->version = (int)$version;
     }
 
@@ -74,7 +74,7 @@ class Hashcash {
     public function setBits($bits){
         $this->bits = (int)$bits;
     }
-    
+
     public function getBits(){
         return (int)$this->bits;
     }
@@ -202,7 +202,8 @@ class Hashcash {
             }
 
             if (!$found) {
-                $salt = Application::SecureRandomString(24, 'base64');
+                $saltBase64Padded = base64_encode(openssl_random_pseudo_bytes(24, true));
+                $salt =  substr($saltBase64Padded, 0, strpos($saltBase64Padded, '='));
             }
         }
 
@@ -275,9 +276,9 @@ class Hashcash {
             $this->parseStamp($stamp);
         }
 
-        $verified = FALSE;
+        $verified = false;
         $bytes = $this->getBits() / 8 + (8 - ($this->getBits() % 8)) / 8;
-        $verified = $this->checkBitsFast(substr(hash('sha1', $stamp, TRUE), 0, $bytes), $bytes, $this->getBits());
+        $verified = $this->checkBitsFast(substr(hash('sha1', $stamp, true), 0, $bytes), $bytes, $this->getBits());
         if ($verified && $this->getExpiration()) {
             $dateLen = strlen($this->getDate());
             $year = '';
@@ -304,9 +305,8 @@ class Hashcash {
             $date = new DateTime($year.'-'.$month.'-'.$day.' '.$hour.':'.$minute.':'.$second);
             $now = new DateTime('now');
             if ($date->getTimestamp() < $now->getTimestamp() - $this->getExpiration()) {
-                $verified = FALSE;
+                $verified = false;
             }
-
         }
 
         return $verified;
@@ -320,7 +320,7 @@ class Hashcash {
         $dataLen = strlen($data);
         for ($charn = 0; $charn < $dataLen; $charn++) {
             $char = ord($data[$charn]);
-            if($char) {
+            if ($char) {
                 for($bit = 7; $bit >= 0; $bit--) {
                     if ($char & (1 << $bit)) {
                         break;

@@ -37,7 +37,8 @@ class BrachioMailer {
 
     const MAILLINEMAXLENGTHHEADER = 998;
 
-    // Sendmail relay support actually support up till 2040 characters per line. http://www.jebriggs.com/blog/2010/07/smtp-maximum-line-lengths/
+    // Sendmail relay support actually support up till 2040 characters per line.
+    // http://www.jebriggs.com/blog/2010/07/smtp-maximum-line-lengths/
     // We try to limit it to 998 characters excluding enters(\r\n)
     //  as a MUST in RFC 5322.
     const MAILLINEMAXLENGTHBODY = 998;
@@ -349,7 +350,8 @@ class BrachioMailer {
             strpos($abuseEmailAddr, ' ') !== false ||
             strpos($abuseEmailAddr, "\r") !== false ||
             strpos($abuseEmailAddr, "\n") !== false) {
-            throw new InvalidArgumentException(sprintf('The %1$s value is not a valid e-mail address.', $abuseEmailAddr));
+            throw new InvalidArgumentException(sprintf('The %1$s value is not a valid e-mail address.',
+                                                       $abuseEmailAddr));
             return;
         }
 
@@ -423,9 +425,10 @@ class BrachioMailer {
     }
 
     /**
-     * Request for the receiving mailclient/MUA to send a Delivery Status Notification/DSN message as soon as the person opens the email.
-     * Warning a lot of mailclients/MUA's will warn the user before sending a Delivery Status Notification/DSN message.
-     * It's also possible that always a "denied" disposition message is send.
+     * Request for the receiving mailclient/MUA to send a Delivery Status Notification/DSN message 
+     * as soon as the person opens the email. Warning a lot of mailclients/MUA's will warn the
+     * user before sending a Delivery Status Notification(DSN) message. It's also possible
+     * that always a denied disposition message is send.
      *
      * @param string $dispositionNotificationEmail The e-mail address that receives the DSN.
      */
@@ -783,7 +786,11 @@ class BrachioMailer {
         }
 
         if ($this->includeipsender) {
-            $ipaddr = $_SERVER['REMOTE_ADDR'];
+            $ipaddr = '';
+            if (isset($_SERVER['REMOTE_ADDR'])) {
+                $ipaddr = $_SERVER['REMOTE_ADDR'];
+            }
+
             if (filter_var($ipaddr, FILTER_VALIDATE_IP)) {
                 if ($this->useencodedip && !empty($this->eipencryptionkey) && 
                     (extension_loaded('mcrypt') || function_exists('openssl_encrypt')) ) {
@@ -1098,26 +1105,44 @@ class BrachioMailer {
     /**
      * Progress the scheduled mail database table to see if mail can be send and removed
      *  from the schedule mail queue.
+     * Uses sendmail which opens and closes an SMTP socket for each email.
+     *
+     * @param $limit Maximum number of message to process now.
      */
-    public function ProcressSchedule($limit = 10)
+    public function ProcressSchedule($limit = 4)
     {
-        if (!is_readable(__DIR__ .'/d_Schedulemail.php')) {
-            echo 'Error d_Schedulemail not found.';
-            return;
+        if (file_exists(__DIR__ .'/config.php')) {
+            require_once(__DIR__ .'/config.php');
         }
 
-        require_once(__DIR__ .'/d_Schedulemail.php');
+        if (file_exists(__DIR__ .'/DB.php')) {
+            require_once(__DIR__ .'/DB.php');
+        }
+
+        require_once(__DIR__ .'/d_Mailschedule.php');
+        $emails = d_Mailschedule::getInstance()->GetAll($limit);
         $dtNow = new DateTime();
-        $emails = d_Schedulemail::getInstance()->GetAll(10);
-        foreach ($emails as &$email ) {
-            $dtScheduleFor = new DateTime($email['sendAfter']);
-            if ($dtScheduleFor > $dtNow) {
-                echo '- mail to '.$email['to'].' can be send.';
-            }
+        foreach ($emails as &$email) {
+            $dtScheduleFor = new DateTime($email['sendafter']);
+            if ($dtScheduleFor < $dtNow) {
+                if ($this->debugmode) {
+                    error_log('DEBUG: ProcressSchedule, mail to:'.$email['to']);
+                } else {
+                    if (!mail($email['to'],
+                              $email['subject'],
+                              $email['body'],
+                              $email['headers'],
+                              $email['arguments'])) {
+                        error_log('Sendmail did not accept the mail.');
+                    }
 
-            usleep(200000);  // wait 200 ms
+                    if (!d_Mailschedule::getInstance()->remove($email['mailscheduleid'])) {
+                        error_log('Could not remove mailscheduleid:'.$email['mailscheduleid']);
+                        return;
+                    }
+                }
+            }
         }
-        
     }
 
     /**

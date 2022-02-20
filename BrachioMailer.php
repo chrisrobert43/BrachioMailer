@@ -1103,13 +1103,11 @@ class BrachioMailer {
     }
 
     /**
-     * Progress the scheduled mail database table to see if mail can be send and removed
+     * Process the scheduled mail database table to see if mail can be send and removed
      *  from the schedule mail queue.
-     * Uses sendmail which opens and closes an SMTP socket for each email.
-     *
-     * @param $limit Maximum number of message to process now.
+     * Notice: (limit * waitms) / 1000  cannot be larger than php max_execution_time value if max_execution_time not 0.
      */
-    public function ProcressSchedule($limit = 4)
+    public function ProcessSchedule($limit = 4, $waitms = 100)
     {
         if (file_exists(__DIR__ .'/config.php')) {
             require_once(__DIR__ .'/config.php');
@@ -1121,12 +1119,13 @@ class BrachioMailer {
 
         require_once(__DIR__ .'/d_Mailschedule.php');
         $emails = d_Mailschedule::getInstance()->GetAll($limit);
+        $waitmicrosec = $waitms * 1000;
         $dtNow = new DateTime();
         foreach ($emails as &$email) {
             $dtScheduleFor = new DateTime($email['sendafter']);
             if ($dtScheduleFor < $dtNow) {
                 if ($this->debugmode) {
-                    error_log('DEBUG: ProcressSchedule, mail to:'.$email['to']);
+                    error_log('DEBUG: ProcessSchedule, mail to:'.$email['to']);
                 } else {
                     if (!mail($email['to'],
                               $email['subject'],
@@ -1135,13 +1134,14 @@ class BrachioMailer {
                               $email['arguments'])) {
                         error_log('Sendmail did not accept the mail.');
                     }
-
                     if (!d_Mailschedule::getInstance()->remove($email['mailscheduleid'])) {
                         error_log('Could not remove mailscheduleid:'.$email['mailscheduleid']);
                         return;
                     }
                 }
             }
+
+            usleep($waitmicrosec);
         }
     }
 

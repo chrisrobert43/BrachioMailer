@@ -40,5 +40,5 @@ if (!file_exists(__DIR__ .'/BrachioMailer.php')) {
 require_once(__DIR__.'/BrachioMailer.php');
 
 $brachioMailer = new BrachioMailer();
-$brachioMailer->ProcressSchedule();
+$brachioMailer->ProcessSchedule();
 

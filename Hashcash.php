@@ -27,7 +27,7 @@ class Hashcash {
     const DATE_FORMATYMD = 'ymd';
     const DATE_FORMAT10 = 'ymdHi';
     const DATE_FORMAT12 = 'ymdHis';
-    const MINT_EXPIRATION = '604800‬';
+    const MINT_EXPIRATION = '604800';
     const MINT_ATTEMPTS_MAX = '10';
 
     private $version = 1;
